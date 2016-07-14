@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nu7hatch/gouuid"
 
@@ -69,9 +70,11 @@ func main() {
 	clock := clock.NewClock()
 	auctioneerServiceClient := auctioneer.NewServiceClient(consulClient, clock)
 	lockMaintainer := initializeLockMaintainer(logger, auctioneerServiceClient, port)
+	worker := initializeWorker(logger)
 
 	members := grouper.Members{
 		{"lock-maintainer", lockMaintainer},
+		{"worker", worker},
 	}
 
 	group := grouper.NewOrdered(os.Interrupt, members)
@@ -109,4 +112,49 @@ func initializeLockMaintainer(logger lager.Logger, serviceClient auctioneer.Serv
 	}
 
 	return lockMaintainer
+}
+
+func initializeWorker(logger lager.Logger) ifrit.Runner {
+	return NewWorker(logger)
+}
+
+type worker struct {
+	logger lager.Logger
+}
+
+func NewWorker(logger lager.Logger) worker {
+	return worker{
+		logger: logger,
+	}
+
+}
+
+func (w worker) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
+	logger := w.logger.Session("worker")
+	logger.Info("starting")
+
+	defer func() {
+		logger.Info("done")
+	}()
+
+	clock := clock.NewClock()
+
+	var c <-chan time.Time
+	c = clock.NewTimer(5 * time.Second).C()
+
+	counter := 0
+	logger.Info("value ", lager.Data{"counter": counter})
+
+	for {
+		select {
+		case sig := <-signals:
+			logger.Info("shutting-down", lager.Data{"received-signal": sig})
+			return nil
+		case <-c:
+			logger.Info("value ", lager.Data{"counter": counter})
+			c = clock.NewTimer(5 * time.Second).C()
+		default:
+			counter += 1
+		}
+	}
 }
